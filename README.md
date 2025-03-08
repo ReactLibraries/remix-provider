@@ -1,6 +1,6 @@
 # remix-provider
 
-Provides the ability to distribute environment variables etc. to clients when using Remix + Cloudflare
+Provides the ability to distribute environment variables etc. to clients when using Remix / React Router + Cloudflare
 
 - ServerProvider
 
@@ -17,7 +17,8 @@ Provides the ability to distribute environment variables etc. to clients when us
 
 - source code
 
-https://github.com/SoraKumo001/remix-provider
+https://github.com/SoraKumo001/remix-provider  
+https://github.com/SoraKumo001/react-router7-hono
 
 - execution result
 
@@ -26,8 +27,8 @@ https://remix-provider.pages.dev/
 ### entry.server.tsx
 
 ```tsx
-import type { AppLoadContext, EntryContext } from "@remix-run/cloudflare";
-import { RemixServer } from "@remix-run/react";
+import type { AppLoadContext, EntryContext } from "react-router";
+import { ServerRouter } from "react-router";
 import { isbot } from "isbot";
 import { renderToReadableStream } from "react-dom/server";
 import { ServerProvider } from "remix-provider";
@@ -36,30 +37,39 @@ export default async function handleRequest(
   request: Request,
   responseStatusCode: number,
   responseHeaders: Headers,
-  remixContext: EntryContext,
-  loadContext: AppLoadContext
+  routerContext: EntryContext,
+  _loadContext: AppLoadContext
 ) {
+  let shellRendered = false;
+  const userAgent = request.headers.get("user-agent");
+
   const body = await renderToReadableStream(
-    // Set the values you want to distribute to clients.
     <ServerProvider
-      value={{
-        env: loadContext.cloudflare.env,
-        host: request.headers.get("host"),
-      }}
+      value={Object.fromEntries(
+        Object.entries(process.env).filter(([key]) =>
+          key.startsWith("REACT_ROUTER_PUBLIC_")
+        )
+      )}
     >
-      <RemixServer context={remixContext} url={request.url} />
+      <ServerRouter context={routerContext} url={request.url} />
     </ServerProvider>,
     {
-      signal: request.signal,
       onError(error: unknown) {
-        // Log streaming rendering errors from inside the shell
-        console.error(error);
         responseStatusCode = 500;
+        // Log streaming rendering errors from inside the shell.  Don't log
+        // errors encountered during initial shell rendering since they'll
+        // reject and get logged in handleDocumentRequest.
+        if (shellRendered) {
+          console.error(error);
+        }
       },
     }
   );
+  shellRendered = true;
 
-  if (isbot(request.headers.get("user-agent") || "")) {
+  // Ensure requests from bots and SPA Mode renders wait for all content to load before responding
+  // https://react.dev/reference/react-dom/server/renderToPipeableStream#waiting-for-all-content-to-load-for-crawlers-and-static-generation
+  if ((userAgent && isbot(userAgent)) || routerContext.isSpaMode) {
     await body.allReady;
   }
 
@@ -75,18 +85,34 @@ export default async function handleRequest(
 
 ```tsx
 import {
+  isRouteErrorResponse,
   Links,
   Meta,
   Outlet,
   Scripts,
   ScrollRestoration,
-} from "@remix-run/react";
-import "./tailwind.css";
+} from "react-router";
 import { RootProvider, RootValue } from "remix-provider";
+
+import type { Route } from "./+types/root";
+import stylesheet from "./app.css?url";
+
+export const links: Route.LinksFunction = () => [
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  {
+    rel: "preconnect",
+    href: "https://fonts.gstatic.com",
+    crossOrigin: "anonymous",
+  },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
+  },
+  { rel: "stylesheet", href: stylesheet },
+];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    // Additional providers.
     <RootProvider>
       <html lang="en">
         <head>
@@ -94,7 +120,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <Meta />
           <Links />
-          {/* Install components to transfer data to clients. */}
           <RootValue />
         </head>
         <body>
